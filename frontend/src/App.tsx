@@ -1,70 +1,110 @@
-// src/App.tsx - Everything in one file first
-import React, { useState } from 'react';
-import { Clip } from './types';
-import { colors } from './colors';
+import React, { useState, useEffect } from 'react';
+import { Clip, SearchHistoryItem } from './types';
+
+// Simple NBA clip finder app - All components in one file
+const API_BASE = 'http://localhost:5001';
+const HISTORY_KEY = 'nba_search_history';
 
 function App() {
   const [clips, setClips] = useState<Clip[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [query, setQuery] = useState('');
 
-  // Mock data for testing
-  const mockClips: Clip[] = [
-    {
-      title: "LeBron James Amazing Dunk",
-      game_date: "2016-06-08",
-      matchup: "Lakers vs Warriors",
-      period: 3,
-      time_remaining: "2:45",
-      video_url: "https://youtube.com/watch?v=0bXg9nofz4I",
-      thumbnail_url: "https://img.youtube.com/vi/0bXg9nofz4I/maxresdefault.jpg",
-      source: "YouTube"
+  const handleSearch = async (searchQuery: string) => {
+    setLoading(true);
+    setError(null);
+    setClips([]);
+
+    try {
+      const response = await fetch(`${API_BASE}/api/search`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query: searchQuery })
+      });
+
+      const data = await response.json();
+
+      if (data.success) {
+        setClips(data.clips);
+
+      } else {
+        setError(data.error || 'Something went wrong');
+      }
+    } catch (err) {
+      setError('Failed to connect to server. Make sure the backend is running.');
+    } finally {
+      setLoading(false);
     }
-  ];
+  };
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    const trimmedQuery = query.trim();
+    if (trimmedQuery) handleSearch(trimmedQuery);
+  };
 
   return (
     <div style={styles.container}>
-      {/* Header */}
       <div style={styles.header}>
-        <h1>NBA Clip Finder</h1>
+        <h1 style={styles.title}>🏀 NBA Clip Finder</h1>
+        <p style={styles.subtitle}>Find amazing NBA moments using natural language search</p>
       </div>
 
-      {/* Search Form */}
-      <div style={styles.searchForm}>
-        <input 
-          type="text" 
-          placeholder="Search for NBA clips..."
-          style={styles.searchInput}
-        />
-        <button style={styles.searchBtn}>Search</button>
+      <div style={styles.searchCard}>
+        <h2 style={styles.searchTitle}>Find NBA Clips</h2>
+        
+        <form style={styles.searchForm} onSubmit={handleSubmit}>
+          <input
+            type="text"
+            style={styles.searchInput}
+            placeholder="Try: 'LeBron dunks' or 'Steph Curry game winner'"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            required
+          />
+          <button type="submit" style={styles.searchBtn} disabled={loading}>
+            {loading ? 'Searching...' : 'Search'}
+          </button>
+        </form>
+        
+        {loading && (
+          <div style={{ textAlign: 'center', color: '#666', margin: '20px 0' }}>
+            Searching for clips...
+          </div>
+        )}
       </div>
 
-      {/* Results */}
+      {error && (
+        <div style={styles.error}>
+          {error}
+        </div>
+      )}
+
       <div style={styles.results}>
-        {mockClips.map((clip, index) => (
-          <div key={index} style={styles.clipCard}>
-            <div style={styles.clipThumbnail}>
-              <img src={clip.thumbnail_url} alt={clip.title} style={styles.thumbnailImg} />
-            </div>
-            <div style={styles.clipInfo}>
-              <h3 style={styles.clipTitle}>{clip.title}</h3>
-              <p style={styles.clipDescription}>
-                Period {clip.period} • {clip.time_remaining}
-              </p>
-              <div style={styles.clipMeta}>
-                <span>{clip.matchup} • {clip.game_date}</span>
-                <a href={clip.video_url} target="_blank" style={styles.watchBtn}>
-                  Watch
+        {clips.length === 0 ? (
+          <p style={styles.noResults}>
+            No clips found. Try a different search!
+          </p>
+        ) : (
+          clips.map((clip, index) => (
+            <div key={index} style={styles.clipCard}>
+              <div style={styles.clipInfo}>
+                <div style={styles.clipTitle}>{clip.title}</div>
+                <div style={styles.clipDescription}>
+                  Period {clip.period} • {clip.time_remaining}
+                </div>
+                <a 
+                  href={clip.video_url} 
+                  target="_blank" 
+                  rel="noopener noreferrer"
+                >
+                  Watch Video
                 </a>
               </div>
             </div>
-          </div>
-        ))}
-      </div>
-
-      {/* Footer */}
-      <div style={styles.footer}>
-        <p>NBA Clip Finder - Find your favorite moments</p>
+          ))
+        )}
       </div>
     </div>
   );
@@ -78,85 +118,86 @@ const styles = {
   },
   header: {
     textAlign: 'center' as const,
+    marginBottom: '40px'
+  },
+  title: {
+    fontSize: '2.5rem',
+    fontWeight: 'bold',
+    marginBottom: '10px'
+  },
+  subtitle: {
+    fontSize: '1.1rem',
+    color: '#666'
+  },
+  searchCard: {
+    background: 'white',
+    borderRadius: '12px',
+    padding: '30px',
+    boxShadow: '0 2px 8px rgba(0,0,0,0.1)',
+    border: '1px solid #ddd',
     marginBottom: '30px'
-    // literally centers "NBA Clip Finder" towards the center
+  },
+  searchTitle: {
+    fontSize: '24px',
+    fontWeight: 'bold',
+    marginBottom: '20px'
   },
   searchForm: {
-    display: 'flex', // moves search button all the way to the right of the search query box
-    marginBottom: '30px',
-    gap: '10px'
-    // give space between the search box and clip thumbnail
+    display: 'flex',
+    gap: '10px',
+    marginBottom: '20px'
   },
-  searchInput: { 
-    flex: 1, // extend search box all the way to right of container
-    padding: '12px',
-    border: '1px solid #ddd', 
-    borderRadius: '6px' 
+  searchInput: {
+    flex: 1,
+    padding: '12px 16px',
+    border: '1px solid #ddd',
+    borderRadius: '8px',
+    fontSize: '16px'
   },
   searchBtn: {
-    padding: '12px 24px', // give it a rectangular button look
-    background: colors.primary, // use blue look
+    padding: '12px 24px',
+    background: '#007bff',
     color: 'white',
     border: 'none',
-    borderRadius: '6px',
+    borderRadius: '8px',
+    fontSize: '16px',
     cursor: 'pointer'
   },
+  error: {
+    color: 'red',
+    textAlign: 'center' as const,
+    margin: '20px 0'
+  },
   results: {
-    display: 'grid', // would make clip take up full width of container
-    gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', // makes clip container even smaller (sort of 1/3 of container)
-    gap: '20px',
-    marginBottom: '30px',
+    display: 'grid',
+    gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))',
+    gap: '20px'
+  },
+  noResults: {
+    textAlign: 'center' as const,
+    color: '#666',
+    gridColumn: '1 / -1',
+    fontSize: '16px'
   },
   clipCard: {
-    background: colors.background,
-    borderRadius: '12px', // rounded corners
-    overflow: 'hidden' as const, // clips thumbnail corners
-    border: `1px solid ${colors.border}` // slight gray border around clip card
-  },
-  clipThumbnail: {
-    width: '100%', // fit the whole width
-    height: '200px', // less of the thumbnail height
-    background: '#f5f5f5' // fallback background if thumbnail fails
-  },
-  thumbnailImg: {
-    width: '100%',
-    height: '100%',
-    objectFit: 'cover' as const // cover the whole thumbnail area
+    background: 'white',
+    borderRadius: '12px',
+    boxShadow: '0 2px 8px rgba(0,0,0,0.1)',
+    border: '1px solid #ddd',
+    padding: '20px'
   },
   clipInfo: {
-    padding: '20px' // space between thumbnail and text info
+
   },
   clipTitle: {
     fontSize: '18px',
     fontWeight: 'bold',
-    marginBottom: '10px',
-    color: colors.text
+    marginBottom: '10px'
   },
   clipDescription: {
-    color: colors.textLight,
+    color: '#666',
     marginBottom: '15px',
     fontSize: '14px'
-  },
-  clipMeta: {
-    display: 'flex', // flexbox to space out the text and watch button
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    fontSize: '14px',
-    color: colors.textLight
-  },
-  watchBtn: {
-    background: colors.primary, // blue color for button
-    color: 'white',
-    padding: '8px 16px', // top-right-bottom-left padding
-    border: 'none',
-    borderRadius: '6px', // rounds the button corners
-    textDecoration: 'none',
-    fontSize: '14px'
-  },
-  footer: {
-    textAlign: 'center' as const,
-    color: colors.textLight,
-    marginTop: '50px' // push footer down
   }
 };
 
