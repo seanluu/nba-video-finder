@@ -41,5 +41,32 @@ NBA_HEADERS = {
     'Referer': 'https://stats.nba.com/'
 }
 
+def search_games_by_date(team1, team2, game_date):
+    try:
+        team1_data = get_team_info(team1)
+        team2_data = get_team_info(team2)
+        
+        if not team1_data or not team2_data:
+            return []
+        
+        games_df = leaguegamefinder.LeagueGameFinder(team_id_nullable=team1_data['id'].get_data_frames()[0])
+        matching_games = games_df[
+            (games_df['GAME_DATE'] == game_date) &
+            (games_df['MATCHUP'].str.contains(team2_data['abbr'], case=False, na=False))
+        ]
+        
+        return [{ 'game_id': row['GAME_ID'], 'game_date': row['GAME_DATE'], 'matchup': row['MATCHUP']}
+                for _, row in matching_games.iterrows()]
+        
+    except Exception:
+        return []
+    
+def get_game_events(game_id):
+    try:
+        events_df = playbyplayv2.PlayByPlayV2(game_id=game_id).get_data_frames()[0]
+        return events_df
+    except Exception:
+        return None
+
 if __name__ == "__main__":
     print("running")
