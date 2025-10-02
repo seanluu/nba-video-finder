@@ -68,5 +68,51 @@ def get_game_events(game_id):
     except Exception:
         return None
 
+def find_event_by_type(events_df, player_name, event_type):
+    """Find a specific type of event for a player in the play-by-play data"""
+    try:
+        if events_df is None or len(events_df) == 0:
+            return None
+            
+        # Filter by player name
+        player_events = events_df[
+            events_df['PLAYER1_NAME'].str.contains(player_name, case=False, na=False)
+        ]
+        
+        if len(player_events) == 0:
+            return None
+            
+        # Combine descriptions for easier matching
+        home_desc = player_events['HOMEDESCRIPTION'].fillna('')
+        visitor_desc = player_events['VISITORDESCRIPTION'].fillna('')
+        combined_desc = home_desc + ' ' + visitor_desc
+        
+        # Match event type
+        event_type_lower = event_type.lower() if event_type else ''
+        
+        if 'block' in event_type_lower:
+            events = player_events[combined_desc.str.contains('BLOCK', case=False, na=False)]
+        elif '3' in event_type_lower or 'three' in event_type_lower:
+            events = player_events[combined_desc.str.contains('3PT', case=False, na=False)]
+        elif 'dunk' in event_type_lower:
+            events = player_events[combined_desc.str.contains('DUNK', case=False, na=False)]
+        elif 'free throw' in event_type_lower:
+            events = player_events[combined_desc.str.contains('FREE THROW', case=False, na=False)]
+        elif 'game winner' in event_type_lower:
+            # Game winners: made shots in 4th quarter or overtime
+            events = player_events[
+                (player_events['EVENTMSGTYPE'] == 1) & 
+                (player_events['PERIOD'] >= 4)
+            ]
+        else:
+            # Default to any made shot
+            events = player_events[player_events['EVENTMSGTYPE'] == 1]
+            
+        # Return the last matching event
+        return events.iloc[-1] if len(events) > 0 else None
+        
+    except Exception:
+        return None
+    
 if __name__ == "__main__":
     print("running")
