@@ -2,6 +2,8 @@ import os
 import requests
 from nba_api.stats.endpoints import leaguegamefinder, playbyplayv2
 from nba_api.stats.static import teams
+from google.genai.types import Tool, GenerateContentConfig, GoogleSearch
+import googleapiclient.discovery
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -40,6 +42,67 @@ NBA_HEADERS = {
     'Accept': 'application/json',
     'Referer': 'https://stats.nba.com/'
 }
+
+def parse_nba_highlight(query):
+    try:
+        client = genai.Client(api_key=os.getenv('GOOGLE_GEMINI_API_KEY'))
+        google_search_tool = Tool(google_search=GoogleSearch())
+        
+        prompt = """Find this NBA game and return JSON:
+
+{{
+  "player": "full player name (resolve nicknames like KD to Kevin Durant, Steph to Stephen Curry)",
+  "player_team": "player's team at the time of the game",
+  "opponent": "opponent team name", 
+  "event_type": "one of: block, 3-pointer, dunk, free throw, game winner, highlight",
+  "game_date": "YYYY-MM-DD"
+}}
+
+Search for the most relevant information about this game; infer the correct event type from the query.
+"""
+        
+        response = client.models.generate_content(
+            model="gemini-2.0-flash",
+            contents=prompt + f"\n\nQuery: {query}",
+            config=GenerateContentConfig(tools=[google_search_tool]),
+        )
+        
+        # Extract and parse JSON from response
+        response_text = "".join(part.text for part in response.candidates[0].content.parts).strip()
+        response_text = response_text.replace('```json', '').replace('```', '').strip()
+        
+        # Find and parse JSON
+        start = response_text.find('{')
+        end = response_text.rfind('}')
+        if start != -1 and end > start:
+            json_text = response_text[start:end + 1]
+            try:
+                return json.loads(json_text)
+            except json.JSONDecodeError:
+                pass
+        return {}
+        
+    except Exception:
+        return {}
+    
+def get_video_url(game_id, event_id):
+    """Get the video URL for a specific event from NBA API"""
+    try:
+        response = requests.get(
+            f'https://stats.nba.com/stats/videoeventsasset?GameEventID={event_id}&GameID={game_id}',
+            headers=NBA_HEADERS,
+            timeout=10
+        )
+        
+        if response.status_code == 200:
+            data = response.json()
+            video_urls = data.get('resultSets', {}).get('Meta', {}).get('videoUrls', [])
+            if video_urls and video_urls[0].get('lurl'):
+                return video_urls[0]['lurl']
+        
+        return None
+    except Exception:
+        return None
 
 def search_games_by_date(team1, team2, game_date):
     try:
