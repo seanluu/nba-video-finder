@@ -8,7 +8,6 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# Load team data from NBA API static data
 TEAM_DATA = []
 for team in teams.get_teams():
     names = [team["full_name"]]
@@ -36,7 +35,6 @@ def get_team_info(team_name):
                 return {"id": team["id"], "abbr": team["abbr"]}
     return None
 
-# NBA API headers, keep minimal so it treats us like a user
 NBA_HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
     'Accept': 'application/json',
@@ -86,7 +84,7 @@ Search for the most relevant information about this game; infer the correct even
         return {}
     
 def get_video_url(game_id, event_id):
-    """Get the video URL for a specific event from NBA API"""
+    """get the video URL for a specific event from NBA API"""
     try:
         response = requests.get(
             f'https://stats.nba.com/stats/videoeventsasset?GameEventID={event_id}&GameID={game_id}',
@@ -137,7 +135,6 @@ def find_event_by_type(events_df, player_name, event_type):
         if events_df is None or len(events_df) == 0:
             return None
             
-        # Filter by player name
         player_events = events_df[
             events_df['PLAYER1_NAME'].str.contains(player_name, case=False, na=False)
         ]
@@ -145,12 +142,10 @@ def find_event_by_type(events_df, player_name, event_type):
         if len(player_events) == 0:
             return None
             
-        # Combine descriptions for easier matching
         home_desc = player_events['HOMEDESCRIPTION'].fillna('')
         visitor_desc = player_events['VISITORDESCRIPTION'].fillna('')
         combined_desc = home_desc + ' ' + visitor_desc
         
-        # Match event type
         event_type_lower = event_type.lower() if event_type else ''
         
         if 'block' in event_type_lower:
@@ -162,7 +157,6 @@ def find_event_by_type(events_df, player_name, event_type):
         elif 'free throw' in event_type_lower:
             events = player_events[combined_desc.str.contains('FREE THROW', case=False, na=False)]
         elif 'game winner' in event_type_lower:
-            # Game winners: made shots in 4th quarter or overtime
             events = player_events[
                 (player_events['EVENTMSGTYPE'] == 1) & 
                 (player_events['PERIOD'] >= 4)
@@ -174,6 +168,77 @@ def find_event_by_type(events_df, player_name, event_type):
         # Return the last matching event
         return events.iloc[-1] if len(events) > 0 else None
         
+    except Exception:
+        return None
+    
+def find_nba_video_clip(query):
+    """Main function that orchestrates the entire video finding process"""
+    try:
+        # Parse query with AI
+        parsed_query = parse_nba_highlight(query)
+        if not parsed_query:
+            return {"success": False, "error": "Failed to parse query"}
+        
+        player_name = parsed_query.get('player')
+        player_team = parsed_query.get('player_team')
+        opponent_team = parsed_query.get('opponent')
+        game_date = parsed_query.get('game_date')
+        event_type = parsed_query.get('event_type', 'highlight')
+        
+        if not player_name or not player_team or not opponent_team:
+            return {"success": False, "error": "Missing required information"}
+        
+        # Find games
+        games = search_games_by_date(player_team, opponent_team, game_date)
+        if not games:
+            return {"success": False, "error": f"No games found"}
+        
+        # Process each game to find the event
+        for game in games:
+            events = get_game_events(game['game_id'])
+            if events is None:
+                continue
+            
+            event = find_event_by_type(events, player_name, event_type)
+            if event is None:
+                continue
+            
+            video_url = get_video_url(game['game_id'], event['EVENTNUM'])
+            if video_url:
+                return {
+                    "success": True,
+                    "video_url": video_url,
+                    "game_date": game['game_date'],
+                    "matchup": game['matchup']
+                }
+        
+        return {"success": False, "error": "No video found"}
+        
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+    
+def search_youtube(query):
+    """Search YouTube as fallback when NBA video isn't available"""
+    try:
+        youtube_api_key = os.getenv('YOUTUBE_API_KEY')
+        if not youtube_api_key:
+            return None
+        
+        youtube = googleapiclient.discovery.build('youtube', 'v3', developerKey=youtube_api_key)
+        
+        search_response = youtube.search().list(
+            part='snippet',
+            q=query,
+            type='video',
+            maxResults=1,
+            order='relevance'
+        ).execute()
+        
+        if search_response.get('items'):
+            video_id = search_response['items'][0]['id']['videoId']
+            return f"https://youtu.be/{video_id}"
+        
+        return None
     except Exception:
         return None
     
