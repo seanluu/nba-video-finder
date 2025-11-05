@@ -1,7 +1,9 @@
 import os
+import json
 import requests
 from nba_api.stats.endpoints import leaguegamefinder, playbyplayv2
 from nba_api.stats.static import teams
+from google import genai
 from google.genai.types import Tool, GenerateContentConfig, GoogleSearch
 import googleapiclient.discovery
 from dotenv import load_dotenv
@@ -43,7 +45,11 @@ NBA_HEADERS = {
 
 def parse_nba_highlight(query):
     try:
-        client = genai.Client(api_key=os.getenv('GOOGLE_GEMINI_API_KEY'))
+        api_key = os.getenv('GOOGLE_GEMINI_API_KEY')
+        if not api_key:
+            print("ERROR: GOOGLE_GEMINI_API_KEY not set in environment")
+            return {}
+        client = genai.Client(api_key=api_key)
         google_search_tool = Tool(google_search=GoogleSearch())
         
         prompt = """Find this NBA game and return JSON:
@@ -80,7 +86,8 @@ Search for the most relevant information about this game; infer the correct even
                 pass
         return {}
         
-    except Exception:
+    except Exception as e:
+        print(f"ERROR in parse_nba_highlight: {type(e).__name__}: {str(e)}")
         return {}
     
 def get_video_url(game_id, event_id):
@@ -110,7 +117,7 @@ def search_games_by_date(team1, team2, game_date):
         if not team1_data or not team2_data:
             return []
         
-        games_df = leaguegamefinder.LeagueGameFinder(team_id_nullable=team1_data['id'].get_data_frames()[0])
+        games_df = leaguegamefinder.LeagueGameFinder(team_id_nullable=team1_data['id']).get_data_frames()[0]
         matching_games = games_df[
             (games_df['GAME_DATE'] == game_date) &
             (games_df['MATCHUP'].str.contains(team2_data['abbr'], case=False, na=False))
@@ -205,11 +212,18 @@ def find_nba_video_clip(query):
             
             video_url = get_video_url(game['game_id'], event['EVENTNUM'])
             if video_url:
+                clip = {
+                    "title": f"{player_name} - {event_type}",
+                    "game_date": game['game_date'],
+                    "matchup": game['matchup'],
+                    "period": int(event.get('PERIOD', 1)),
+                    "time_remaining": event.get('PCTIMESTRING', ''),
+                    "video_url": video_url,
+                    "source": "nba"
+                }
                 return {
                     "success": True,
-                    "video_url": video_url,
-                    "game_date": game['game_date'],
-                    "matchup": game['matchup']
+                    "clips": [clip]
                 }
         
         return {"success": False, "error": "No video found"}
