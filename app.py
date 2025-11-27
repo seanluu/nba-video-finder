@@ -71,11 +71,9 @@ Search for the most relevant information about this game; infer the correct even
             config=GenerateContentConfig(tools=[google_search_tool]),
         )
         
-        # Extract and parse JSON from response
         response_text = "".join(part.text for part in response.candidates[0].content.parts).strip()
         response_text = response_text.replace('```json', '').replace('```', '').strip()
         
-        # Find and parse JSON
         start = response_text.find('{')
         end = response_text.rfind('}')
         if start != -1 and end > start:
@@ -169,10 +167,10 @@ def find_event_by_type(events_df, player_name, event_type):
                 (player_events['PERIOD'] >= 4)
             ]
         else:
-            # Default to any made shot
+            # default to any made shot
             events = player_events[player_events['EVENTMSGTYPE'] == 1]
             
-        # Return the last matching event
+        # return the last matching event
         return events.iloc[-1] if len(events) > 0 else None
         
     except Exception:
@@ -181,7 +179,6 @@ def find_event_by_type(events_df, player_name, event_type):
 def find_nba_video_clip(query):
     """Main function that orchestrates the entire video finding process"""
     try:
-        # Parse query with AI
         parsed_query = parse_nba_highlight(query)
         if not parsed_query:
             return {"success": False, "error": "Failed to parse query"}
@@ -195,12 +192,10 @@ def find_nba_video_clip(query):
         if not player_name or not player_team or not opponent_team:
             return {"success": False, "error": "Missing required information"}
         
-        # Find games
         games = search_games_by_date(player_team, opponent_team, game_date)
         if not games:
             return {"success": False, "error": f"No games found"}
         
-        # Process each game to find the event
         for game in games:
             events = get_game_events(game['game_id'])
             if events is None:
@@ -231,6 +226,27 @@ def find_nba_video_clip(query):
     except Exception as e:
         return {"success": False, "error": str(e)}
     
+def get_video_url(game_id, event_id):
+    try:
+        response = _get_with_retries(
+            f'https://stats.nba.com/stats/videoeventsasset?GameEventID={event_id}&GameID={game_id}',
+            headers=NBA_HEADERS,
+            timeout=REQUEST_TIMEOUT_SECONDS
+        )
+        
+        if response.status_code == 200:
+            data = response.json()
+            video_urls = data.get('resultSets', {}).get('Meta', {}).get('videoUrls', [])
+            if video_urls and video_urls[0].get('lurl'):
+                video_data = video_urls[0]
+                video_url = video_data['lurl']
+                thumbnail_url = video_data.get('lth')
+                return {"url": video_url, "thumbnail_url": thumbnail_url}
+        
+        return None
+    except Exception:
+        return None
+    
 def search_youtube(query):
     """Search YouTube as fallback when NBA video isn't available"""
     try:
@@ -257,4 +273,4 @@ def search_youtube(query):
         return None
     
 if __name__ == "__main__":
-    print("running")
+    pass
