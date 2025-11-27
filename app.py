@@ -54,7 +54,39 @@ for team in teams.get_teams():
         "abbr": team["abbreviation"],
         "names": names
     })
-
+    
+def get_cached_result(query):
+    cache_collection = get_cache_collection()
+    if cache_collection is None:
+        return None
+    
+    try: 
+        # look for a doc w/ the query, if we find we ret the cached result
+        result = cache_collection.find_one({"query" : query.lower().strip()})
+        if result:
+            return result['result']
+        return None
+    except:
+        return None
+    
+def set_cached_result(query, result):
+    cache_collection = get_cache_collection()
+    if cache_collection is None:
+        return None
+    
+    try: 
+        cache_collection.replace_one(
+            {"query" : query.lower().strip()}, # look for query
+            {
+                "query" : query.lower().strip(), # save query
+                "result": result, # save result
+                "created_at": datetime.utcnow() # then save when we created it
+            },
+            upsert=True
+        )
+    except:
+        pass # continue even if fails
+    
 def normalize_team_name(name):
     return name.lower().strip().replace("the ", "")
 
