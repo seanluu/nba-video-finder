@@ -1,5 +1,6 @@
 import os
 import json
+from click import pass_obj
 import requests
 from nba_api.stats.endpoints import leaguegamefinder, playbyplayv2
 from nba_api.stats.static import teams
@@ -7,8 +8,38 @@ from google import genai
 from google.genai.types import Tool, GenerateContentConfig, GoogleSearch
 import googleapiclient.discovery
 from dotenv import load_dotenv
+from pymongo import MongoClient
+from datetime import datetime
 
 load_dotenv()
+
+# connect to MongoDB
+def get_mongo_client():
+    try:
+        return MongoClient(os.getenv('MONGO_URI', 'mongodb://localhost:27017/'))
+    except:
+        return None
+
+_CACHE_COLLECTION = None
+
+def get_cache_collection():
+    global _CACHE_COLLECTION
+    if _CACHE_COLLECTION is not None:
+        return _CACHE_COLLECTION
+    
+    client = get_mongo_client()
+    if not client:
+        return None
+    
+    db = client['nba_video_finder'] # database
+    collection = db['cache'] # get collection
+    
+    try:
+        collection.create_index("query", unique = True)
+        collection.create_index("created_at", expireAfterSeconds = 60 * 60 * 24)
+    finally:
+        _CACHE_COLLECTION = collection # save globally
+    return _CACHE_COLLECTION
 
 TEAM_DATA = []
 for team in teams.get_teams():
@@ -228,7 +259,7 @@ def find_nba_video_clip(query):
     
 def get_video_url(game_id, event_id):
     try:
-        response = _get_with_retries(
+        response = requests.get(
             f'https://stats.nba.com/stats/videoeventsasset?GameEventID={event_id}&GameID={game_id}',
             headers=NBA_HEADERS,
             timeout=REQUEST_TIMEOUT_SECONDS
@@ -238,10 +269,7 @@ def get_video_url(game_id, event_id):
             data = response.json()
             video_urls = data.get('resultSets', {}).get('Meta', {}).get('videoUrls', [])
             if video_urls and video_urls[0].get('lurl'):
-                video_data = video_urls[0]
-                video_url = video_data['lurl']
-                thumbnail_url = video_data.get('lth')
-                return {"url": video_url, "thumbnail_url": thumbnail_url}
+                return video_urls[0]['lurl']
         
         return None
     except Exception:
