@@ -1,22 +1,26 @@
 import os
 import json
-from click import pass_obj
+import time
 import requests
+from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from nba_api.stats.endpoints import leaguegamefinder, playbyplayv2
 from nba_api.stats.static import teams
-from google import genai
+import google.genai as genai
 from google.genai.types import Tool, GenerateContentConfig, GoogleSearch
 import googleapiclient.discovery
 from dotenv import load_dotenv
 from pymongo import MongoClient
-from datetime import datetime
 
 load_dotenv()
 
-# connect to MongoDB
+MAX_PARALLEL_WORKERS = 3
+REQUEST_TIMEOUT_SECONDS = 8
+REQUEST_MAX_RETRIES = 2
+
 def get_mongo_client():
     try:
-        return MongoClient(os.getenv('MONGO_URI', 'mongodb://localhost:27017/'))
+        return MongoClient(os.getenv('MONGODB_URI', 'mongodb://localhost:27017/'))
     except:
         return None
 
@@ -26,23 +30,23 @@ def get_cache_collection():
     global _CACHE_COLLECTION
     if _CACHE_COLLECTION is not None:
         return _CACHE_COLLECTION
-    
+
     client = get_mongo_client()
     if not client:
         return None
-    
-    db = client['nba_video_finder'] # database
-    collection = db['cache'] # get collection
-    
+
+    db = client['nba_video_finder']
+    collection = db['search_cache']
     try:
-        collection.create_index("query", unique = True)
-        collection.create_index("created_at", expireAfterSeconds = 60 * 60 * 24)
+        collection.create_index("query", unique=True)
+        collection.create_index("created_at", expireAfterSeconds=86400)
     finally:
-        _CACHE_COLLECTION = collection # save globally
+        _CACHE_COLLECTION = collection
     return _CACHE_COLLECTION
 
 TEAM_DATA = []
 for team in teams.get_teams():
+    # we build list of possible names for each team
     names = [team["full_name"]]
     if team.get("nickname"):
         names.append(team["nickname"])
@@ -54,39 +58,8 @@ for team in teams.get_teams():
         "abbr": team["abbreviation"],
         "names": names
     })
-    
-def get_cached_result(query):
-    cache_collection = get_cache_collection()
-    if cache_collection is None:
-        return None
-    
-    try: 
-        # look for a doc w/ the query, if we find we ret the cached result
-        result = cache_collection.find_one({"query" : query.lower().strip()})
-        if result:
-            return result['result']
-        return None
-    except:
-        return None
-    
-def set_cached_result(query, result):
-    cache_collection = get_cache_collection()
-    if cache_collection is None:
-        return None
-    
-    try: 
-        cache_collection.replace_one(
-            {"query" : query.lower().strip()}, # look for query
-            {
-                "query" : query.lower().strip(), # save query
-                "result": result, # save result
-                "created_at": datetime.utcnow() # then save when we created it
-            },
-            upsert=True
-        )
-    except:
-        pass # continue even if fails
-    
+
+
 def normalize_team_name(name):
     return name.lower().strip().replace("the ", "")
 
@@ -106,13 +79,55 @@ NBA_HEADERS = {
     'Referer': 'https://stats.nba.com/'
 }
 
+def get_cached_result(query):
+    cache_collection = get_cache_collection()
+    if cache_collection is None:
+        return None
+    
+    try:
+        result = cache_collection.find_one({"query": query.lower().strip()})
+        if result:
+            return result['result']
+        return None
+    except:
+        return None
+
+def set_cached_result(query, result):
+    cache_collection = get_cache_collection()
+    if cache_collection is None:
+        return
+    
+    try:
+        cache_collection.replace_one(
+            {"query": query.lower().strip()},
+            {
+                "query": query.lower().strip(),
+                "result": result,
+                "created_at": datetime.utcnow()
+            },
+            upsert=True
+        )
+    except:
+        pass
+
+
+def _get_with_retries(url, headers=None, timeout=REQUEST_TIMEOUT_SECONDS):
+    last_exc = None
+    for attempt in range(REQUEST_MAX_RETRIES + 1):
+        try:
+            return requests.get(url, headers=headers, timeout=timeout)
+        except Exception as exc:
+            last_exc = exc
+            if attempt < REQUEST_MAX_RETRIES:
+                time.sleep(0.75 * (2 ** attempt))
+            else:
+                break
+    raise last_exc if last_exc else RuntimeError("request failed")
+
+
 def parse_nba_highlight(query):
     try:
-        api_key = os.getenv('GOOGLE_GEMINI_API_KEY')
-        if not api_key:
-            print("ERROR: GOOGLE_GEMINI_API_KEY not set in environment")
-            return {}
-        client = genai.Client(api_key=api_key)
+        client = genai.Client(api_key=os.getenv('GOOGLE_GEMINI_API_KEY'))
         google_search_tool = Tool(google_search=GoogleSearch())
         
         prompt = """Find this NBA game and return JSON:
@@ -129,7 +144,7 @@ Search for the most relevant information about this game; infer the correct even
 """
         
         response = client.models.generate_content(
-            model="gemini-2.0-flash",
+            model="gemini-2.5-flash",
             contents=prompt + f"\n\nQuery: {query}",
             config=GenerateContentConfig(tools=[google_search_tool]),
         )
@@ -147,28 +162,116 @@ Search for the most relevant information about this game; infer the correct even
                 pass
         return {}
         
-    except Exception as e:
-        print(f"ERROR in parse_nba_highlight: {type(e).__name__}: {str(e)}")
+    except Exception:
         return {}
-    
-def get_video_url(game_id, event_id):
-    """get the video URL for a specific event from NBA API"""
+
+
+def _handle_fallback(query, youtube_result, error_msg="Search failed"):
+    if youtube_result:
+        clip = {
+            "title": youtube_result["title"],
+            "game_date": youtube_result.get("publish_date", "Unknown"),
+            "matchup": "YouTube Video",
+            "video_url": youtube_result["url"],
+            "thumbnail_url": youtube_result.get("thumbnail_url"),
+            "source": "youtube"
+        }
+        return {"success": True, "clips": [clip]}
+    return {"success": False, "error": error_msg, "clips": []}
+
+def _process_game_for_clip(game, player_name, opponent_team, game_date, event_type):
     try:
-        response = requests.get(
-            f'https://stats.nba.com/stats/videoeventsasset?GameEventID={event_id}&GameID={game_id}',
-            headers=NBA_HEADERS,
-            timeout=10
-        )
+        events = get_game_events(game['game_id'])
+        if events is None or len(events) == 0:
+            return None
         
-        if response.status_code == 200:
-            data = response.json()
-            video_urls = data.get('resultSets', {}).get('Meta', {}).get('videoUrls', [])
-            if video_urls and video_urls[0].get('lurl'):
-                return video_urls[0]['lurl']
+        shot = find_event_by_type(events, player_name, event_type)
+        if shot is None:
+            return None
         
-        return None
+        nba_result = get_video_url(game['game_id'], shot['EVENTNUM'])
+        if nba_result:
+            video_url = nba_result["url"]
+            thumbnail_url = nba_result.get("thumbnail_url")
+            source = "nba"
+        else:
+            youtube_result = search_youtube(f"{player_name} {event_type} {opponent_team} {game_date}")
+            if youtube_result:
+                video_url = youtube_result["url"]
+                thumbnail_url = youtube_result.get("thumbnail_url")
+                source = "youtube"
+            else:
+                return None
+        
+        # Create title
+        home_desc = str(shot.get('HOMEDESCRIPTION') or '').strip()
+        visit_desc = str(shot.get('VISITORDESCRIPTION') or '').strip()
+        title = home_desc or visit_desc or f"{player_name} {event_type}"
+        
+        return {
+            "title": title,
+            "game_date": game['game_date'],
+            "matchup": game['matchup'],
+            "period": int(shot.get('PERIOD', 0)),
+            "time_remaining": str(shot.get('PCTIMESTRING', 'Unknown')),
+            "video_url": video_url,
+            "thumbnail_url": thumbnail_url,
+            "source": source
+        }
     except Exception:
         return None
+
+def _process_games_parallel(games, player_name, opponent_team, game_date, event_type):
+    if not games:
+        return None
+    
+    with ThreadPoolExecutor(max_workers=MAX_PARALLEL_WORKERS) as executor:
+        futures = [
+            executor.submit(_process_game_for_clip, game, player_name, opponent_team, game_date, event_type)
+            for game in games
+        ]
+
+        for future in as_completed(futures, timeout=15):
+            try:
+                result = future.result()
+                if result:
+                    return result
+            except:
+                continue
+    return None
+
+def find_nba_video_clip(query):
+    try:
+        cached_result = get_cached_result(query)
+        if cached_result:
+            return cached_result
+        
+        parsed_query = parse_nba_highlight(query)
+        if not parsed_query:
+            return _handle_fallback(query, search_youtube(query), "Failed to parse query")
+        
+        player_name = parsed_query.get('player')
+        player_team = parsed_query.get('player_team')
+        opponent_team = parsed_query.get('opponent')
+        game_date = parsed_query.get('game_date')
+        
+        if not player_name or not player_team or not opponent_team:
+            return _handle_fallback(query, search_youtube(query), "Missing required information")
+        
+        games = search_games_by_date(player_team, opponent_team, game_date)
+        if not games:
+            return _handle_fallback(query, search_youtube(query), f"No games found between {player_team} and {opponent_team} on {game_date}")
+        
+        clip = _process_games_parallel(games, player_name, opponent_team, game_date, parsed_query.get('event_type', 'highlight'))
+        if clip:
+            result = {"success": True, "clips": [clip]}
+            set_cached_result(query, result)
+            return result
+        
+        return {"success": False, "error": f"No matching video clips found for query: '{query}'", "clips": []}
+        
+    except Exception as e:
+        return {"success": False, "error": str(e), "clips": []}
 
 def search_games_by_date(team1, team2, game_date):
     try:
@@ -180,16 +283,16 @@ def search_games_by_date(team1, team2, game_date):
         
         games_df = leaguegamefinder.LeagueGameFinder(team_id_nullable=team1_data['id']).get_data_frames()[0]
         matching_games = games_df[
-            (games_df['GAME_DATE'] == game_date) &
+            (games_df['GAME_DATE'] == game_date) & 
             (games_df['MATCHUP'].str.contains(team2_data['abbr'], case=False, na=False))
         ]
         
-        return [{ 'game_id': row['GAME_ID'], 'game_date': row['GAME_DATE'], 'matchup': row['MATCHUP']}
+        return [{'game_id': row['GAME_ID'], 'game_date': row['GAME_DATE'], 'matchup': row['MATCHUP']} 
                 for _, row in matching_games.iterrows()]
         
     except Exception:
         return []
-    
+
 def get_game_events(game_id):
     try:
         events_df = playbyplayv2.PlayByPlayV2(game_id=game_id).get_data_frames()[0]
@@ -198,100 +301,49 @@ def get_game_events(game_id):
         return None
 
 def find_event_by_type(events_df, player_name, event_type):
-    """Find a specific type of event for a player in the play-by-play data"""
     try:
-        if events_df is None or len(events_df) == 0:
+        et = (event_type or '').lower()
+        df = events_df.copy()
+
+        # filter by player
+        if 'PLAYER1_NAME' not in df.columns:
             return None
-            
-        player_events = events_df[
-            events_df['PLAYER1_NAME'].str.contains(player_name, case=False, na=False)
-        ]
-        
-        if len(player_events) == 0:
+        df = df[df['PLAYER1_NAME'].str.contains(player_name or '', case=False, na=False)]
+        if len(df) == 0:
             return None
-            
-        home_desc = player_events['HOMEDESCRIPTION'].fillna('')
-        visitor_desc = player_events['VISITORDESCRIPTION'].fillna('')
-        combined_desc = home_desc + ' ' + visitor_desc
-        
-        event_type_lower = event_type.lower() if event_type else ''
-        
-        if 'block' in event_type_lower:
-            events = player_events[combined_desc.str.contains('BLOCK', case=False, na=False)]
-        elif '3' in event_type_lower or 'three' in event_type_lower:
-            events = player_events[combined_desc.str.contains('3PT', case=False, na=False)]
-        elif 'dunk' in event_type_lower:
-            events = player_events[combined_desc.str.contains('DUNK', case=False, na=False)]
-        elif 'free throw' in event_type_lower:
-            events = player_events[combined_desc.str.contains('FREE THROW', case=False, na=False)]
-        elif 'game winner' in event_type_lower:
-            events = player_events[
-                (player_events['EVENTMSGTYPE'] == 1) & 
-                (player_events['PERIOD'] >= 4)
-            ]
+
+        # combine home/visitor descriptions
+        home_desc = df['HOMEDESCRIPTION'].fillna('') if 'HOMEDESCRIPTION' in df.columns else ''
+        visit_desc = df['VISITORDESCRIPTION'].fillna('') if 'VISITORDESCRIPTION' in df.columns else ''
+        combined = (home_desc + ' ' + visit_desc)
+        df = df.assign(_COMBINED_DESC=combined)
+
+        # event type matching
+        if 'game winner' in et or 'winner' in et:
+            # game winner: made shots in 4th quarter or overtime
+            events = df[(df.get('EVENTMSGTYPE') == 1) & (df.get('PERIOD') >= 4)]
+        elif 'free throw' in et or 'freethrow' in et:
+            events = df[df['_COMBINED_DESC'].str.contains('FREE THROW', case=False, na=False)]
+        elif '3' in et:
+            events = df[df['_COMBINED_DESC'].str.contains('3PT', case=False, na=False)]
+        elif 'dunk' in et:
+            events = df[df['_COMBINED_DESC'].str.contains('DUNK', case=False, na=False)]
+        elif 'block' in et:
+            events = df[df['_COMBINED_DESC'].str.contains('BLOCK', case=False, na=False)]
         else:
-            # default to any made shot
-            events = player_events[player_events['EVENTMSGTYPE'] == 1]
-            
-        # return the last matching event
+            made_shots = df[df.get('EVENTMSGTYPE') == 1]
+            if len(made_shots) == 0:
+                return None
+            late_shots = made_shots[made_shots.get('PERIOD') >= 4]
+            events = late_shots if len(late_shots) > 0 else made_shots
+
         return events.iloc[-1] if len(events) > 0 else None
-        
     except Exception:
         return None
-    
-def find_nba_video_clip(query):
-    """Main function that orchestrates the entire video finding process"""
-    try:
-        parsed_query = parse_nba_highlight(query)
-        if not parsed_query:
-            return {"success": False, "error": "Failed to parse query"}
-        
-        player_name = parsed_query.get('player')
-        player_team = parsed_query.get('player_team')
-        opponent_team = parsed_query.get('opponent')
-        game_date = parsed_query.get('game_date')
-        event_type = parsed_query.get('event_type', 'highlight')
-        
-        if not player_name or not player_team or not opponent_team:
-            return {"success": False, "error": "Missing required information"}
-        
-        games = search_games_by_date(player_team, opponent_team, game_date)
-        if not games:
-            return {"success": False, "error": f"No games found"}
-        
-        for game in games:
-            events = get_game_events(game['game_id'])
-            if events is None:
-                continue
-            
-            event = find_event_by_type(events, player_name, event_type)
-            if event is None:
-                continue
-            
-            video_url = get_video_url(game['game_id'], event['EVENTNUM'])
-            if video_url:
-                clip = {
-                    "title": f"{player_name} - {event_type}",
-                    "game_date": game['game_date'],
-                    "matchup": game['matchup'],
-                    "period": int(event.get('PERIOD', 1)),
-                    "time_remaining": event.get('PCTIMESTRING', ''),
-                    "video_url": video_url,
-                    "source": "nba"
-                }
-                return {
-                    "success": True,
-                    "clips": [clip]
-                }
-        
-        return {"success": False, "error": "No video found"}
-        
-    except Exception as e:
-        return {"success": False, "error": str(e)}
-    
+
 def get_video_url(game_id, event_id):
     try:
-        response = requests.get(
+        response = _get_with_retries(
             f'https://stats.nba.com/stats/videoeventsasset?GameEventID={event_id}&GameID={game_id}',
             headers=NBA_HEADERS,
             timeout=REQUEST_TIMEOUT_SECONDS
@@ -301,14 +353,16 @@ def get_video_url(game_id, event_id):
             data = response.json()
             video_urls = data.get('resultSets', {}).get('Meta', {}).get('videoUrls', [])
             if video_urls and video_urls[0].get('lurl'):
-                return video_urls[0]['lurl']
+                video_data = video_urls[0]
+                video_url = video_data['lurl']
+                thumbnail_url = video_data.get('lth')
+                return {"url": video_url, "thumbnail_url": thumbnail_url}
         
         return None
     except Exception:
         return None
-    
-def search_youtube(query):
-    """Search YouTube as fallback when NBA video isn't available"""
+
+def search_youtube(query=""):
     try:
         youtube_api_key = os.getenv('YOUTUBE_API_KEY')
         if not youtube_api_key:
@@ -316,21 +370,25 @@ def search_youtube(query):
         
         youtube = googleapiclient.discovery.build('youtube', 'v3', developerKey=youtube_api_key)
         
+        search_query = query.strip()
+        
         search_response = youtube.search().list(
-            part='snippet',
-            q=query,
-            type='video',
-            maxResults=1,
-            order='relevance'
+            part='snippet', q=search_query, type='video', maxResults=1, order='relevance'
         ).execute()
         
         if search_response.get('items'):
-            video_id = search_response['items'][0]['id']['videoId']
-            return f"https://youtu.be/{video_id}"
+            item = search_response['items'][0]
+            video_id = item['id']['videoId']
+            youtube_url = f"https://youtu.be/{video_id}"
+            video_title = item['snippet']['title']
+            thumbnail_url = item['snippet']['thumbnails'].get('high', {}).get('url')
+            publish_date = item['snippet']['publishedAt'][:10]
+            return {"url": youtube_url, "title": video_title, "thumbnail_url": thumbnail_url, "publish_date": publish_date}
         
         return None
+        
     except Exception:
         return None
-    
+
 if __name__ == "__main__":
     pass

@@ -48,11 +48,22 @@ function App() {
     setClips([]);
 
     try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 90000); // 90 second timeout
+
       const response = await fetch(`${API_BASE}/api/search`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query: searchQuery })
+        body: JSON.stringify({ query: searchQuery }),
+        signal: controller.signal
       });
+
+      clearTimeout(timeoutId);
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ error: 'Unknown error' }));
+        throw new Error(errorData.detail || errorData.error || `Server error: ${response.status}`);
+      }
 
       const data = await response.json();
 
@@ -63,8 +74,14 @@ function App() {
         setError(data.error || 'Something went wrong');
         addToHistory(searchQuery);
       }
-    } catch (err) {
-      setError('Failed to connect to server. Make sure the backend is running.');
+    } catch (err: any) {
+      if (err.name === 'AbortError') {
+        setError('Request timed out. The search is taking too long. Please try again or use a more specific query.');
+      } else if (err.message) {
+        setError(err.message);
+      } else {
+        setError('Failed to connect to server. Make sure the backend is running.');
+      }
       addToHistory(searchQuery);
     } finally {
       setLoading(false);
