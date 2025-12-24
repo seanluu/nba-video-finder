@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Clip, SearchHistoryItem } from './types';
 
-const API_BASE = 'http://localhost:5001';
+const API_BASE = process.env.REACT_APP_API_BASE_URL || 'http://localhost:5001';
 const HISTORY_KEY = 'nba_search_history';
 
 function App() {

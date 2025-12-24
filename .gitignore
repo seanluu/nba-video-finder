@@ -1,16 +1,36 @@
 # Python
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
+*.so
+.Python
 venv/
+env/
+ENV/
 .env
+.env.local
+*.egg-info/
+dist/
+build/
 
 # Node
 frontend/node_modules/
 frontend/build/
+frontend/.pnp
+.pnp.js
+
+# Testing
+.coverage
+.pytest_cache/
+htmlcov/
 
 # IDE
 .vscode/
 .idea/
+*.swp
+*.swo
+*~
 
 # OS
 .DS_Store
+Thumbs.db

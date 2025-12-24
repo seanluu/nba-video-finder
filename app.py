@@ -21,7 +21,7 @@ REQUEST_MAX_RETRIES = 2
 def get_mongo_client():
     try:
         return MongoClient(os.getenv('MONGODB_URI', 'mongodb://localhost:27017/'))
-    except:
+    except Exception:
         return None
 
 _CACHE_COLLECTION = None
@@ -89,7 +89,7 @@ def get_cached_result(query):
         if result:
             return result['result']
         return None
-    except:
+    except Exception:
         return None
 
 def set_cached_result(query, result):
@@ -107,7 +107,7 @@ def set_cached_result(query, result):
             },
             upsert=True
         )
-    except:
+    except Exception:
         pass
 
 
@@ -236,7 +236,7 @@ def _process_games_parallel(games, player_name, opponent_team, game_date, event_
                 result = future.result()
                 if result:
                     return result
-            except:
+            except Exception:
                 continue
     return None
 
@@ -389,6 +389,3 @@ def search_youtube(query=""):
         
     except Exception:
         return None
-
-if __name__ == "__main__":
-    pass
