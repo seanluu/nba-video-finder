@@ -17,7 +17,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Global timeout for entire search operation (60 seconds)
 SEARCH_TIMEOUT_SECONDS = 60
 
 class SearchRequest(BaseModel):
@@ -31,10 +30,7 @@ async def search(request: SearchRequest):
         if not query:
             raise HTTPException(status_code=400, detail="Missing query")
 
-        print(f"[API] Received search request for: '{query}'")
-        
-        # Run the blocking function in a thread pool with timeout
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         with ThreadPoolExecutor(max_workers=1) as executor:
             try:
                 result = await asyncio.wait_for(
@@ -42,41 +38,18 @@ async def search(request: SearchRequest):
                     timeout=SEARCH_TIMEOUT_SECONDS
                 )
             except asyncio.TimeoutError:
-                end_time = time.time()
-                print(f"[API] Search '{query}' timed out after {end_time - start_time:.2f} seconds")
                 raise HTTPException(
-                    status_code=504, 
-                    detail=f"Search timed out after {SEARCH_TIMEOUT_SECONDS} seconds. Please try again."
+                    status_code=504,
+                    detail=f"Search timed out after {SEARCH_TIMEOUT_SECONDS} seconds"
                 )
-        
-        end_time = time.time()
-        print(f"[API] Search '{query}' completed in {end_time - start_time:.2f} seconds")
-        print(f"[API] Result success: {result.get('success', False)}, clips count: {len(result.get('clips', []))}")
+
         return result
     except HTTPException:
         raise
     except Exception as e:
-        end_time = time.time()
-        print(f"[API] Search failed after {end_time - start_time:.2f} seconds: {str(e)}")
         print(traceback.format_exc())
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/health")
 async def health():
     return {"ok": True}
-
-@app.get("/")
-async def index():
-    return {"message": "NBA Video Finder API"}
-
-@app.get("/{path:path}")
-async def catch_all(path: str):
-    return JSONResponse(
-        status_code=404,
-        content={"error": "Not Found", "path": path}
-    )
-
-if __name__ == '__main__':
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=5001)
-
