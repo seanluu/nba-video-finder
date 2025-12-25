@@ -22,7 +22,7 @@ SEARCH_TIMEOUT_SECONDS = 60
 class SearchRequest(BaseModel):
     query: str
 
-@app.post("/api/search")
+@app.post("/search")
 async def search(request: SearchRequest):
     start_time = time.time()
     try:
@@ -60,7 +60,7 @@ async def search(request: SearchRequest):
         print(traceback.format_exc())
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/api/health")
+@app.get("/health")
 async def health():
     return {"ok": True}
 
