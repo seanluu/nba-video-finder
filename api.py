@@ -1,5 +1,6 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from app import find_nba_video_clip
 import time
@@ -22,7 +23,7 @@ SEARCH_TIMEOUT_SECONDS = 60
 class SearchRequest(BaseModel):
     query: str
 
-@app.post("/search")
+@app.post("/api/search")
 async def search(request: SearchRequest):
     start_time = time.time()
     try:
@@ -30,7 +31,7 @@ async def search(request: SearchRequest):
         if not query:
             raise HTTPException(status_code=400, detail="Missing query")
 
-        print(f"[FastAPI] Received search request for: '{query}'")
+        print(f"[API] Received search request for: '{query}'")
         
         # Run the blocking function in a thread pool with timeout
         loop = asyncio.get_event_loop()
@@ -42,31 +43,38 @@ async def search(request: SearchRequest):
                 )
             except asyncio.TimeoutError:
                 end_time = time.time()
-                print(f"[FastAPI] Search '{query}' timed out after {end_time - start_time:.2f} seconds")
+                print(f"[API] Search '{query}' timed out after {end_time - start_time:.2f} seconds")
                 raise HTTPException(
                     status_code=504, 
                     detail=f"Search timed out after {SEARCH_TIMEOUT_SECONDS} seconds. Please try again."
                 )
         
         end_time = time.time()
-        print(f"[FastAPI] Search '{query}' completed in {end_time - start_time:.2f} seconds")
-        print(f"[FastAPI] Result success: {result.get('success', False)}, clips count: {len(result.get('clips', []))}")
+        print(f"[API] Search '{query}' completed in {end_time - start_time:.2f} seconds")
+        print(f"[API] Result success: {result.get('success', False)}, clips count: {len(result.get('clips', []))}")
         return result
     except HTTPException:
         raise
     except Exception as e:
         end_time = time.time()
-        print(f"[FastAPI] Search failed after {end_time - start_time:.2f} seconds: {str(e)}")
+        print(f"[API] Search failed after {end_time - start_time:.2f} seconds: {str(e)}")
         print(traceback.format_exc())
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/health")
+@app.get("/api/health")
 async def health():
     return {"ok": True}
 
 @app.get("/")
 async def index():
     return {"message": "NBA Video Finder API"}
+
+@app.get("/{path:path}")
+async def catch_all(path: str):
+    return JSONResponse(
+        status_code=404,
+        content={"error": "Not Found", "path": path}
+    )
 
 if __name__ == '__main__':
     import uvicorn
