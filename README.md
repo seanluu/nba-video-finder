@@ -1,6 +1,6 @@
-# NBA Video Finder
+# NBA Highlight Finder
 
-The NBA Video Finder is a web application that allows you to search for NBA video clips using natural language queries; describe the play you're looking for (for example, "steph curry game winner against the suns"), and the app will find the relevant video clips from official NBA sources or YouTube.
+The NBA Video Finder is a web application that allows you to search for NBA highlights using natural language queries; describe the play you're looking for (for example, "steph curry game winner against the suns"), and the app will find the relevant video clips from official NBA sources or YouTube.
 
 ## Installation
 
@@ -8,7 +8,7 @@ The NBA Video Finder is a web application that allows you to search for NBA vide
 
 ```bash
 # Clone the repository
-git clone https://github.com/seanluu/nba-video-finder.git
+git clone https://github.com/seanluu/nba-highlight-finder.git
 cd nba-video-finder
 
 # Set up backend
