@@ -3,7 +3,7 @@ import { Clip, SearchHistoryItem } from './types';
 
 const API_BASE = process.env.REACT_APP_API_BASE_URL || 
   (typeof window !== 'undefined' && window.location.hostname === 'localhost' 
-    ? 'https://nba-video-finder.vercel.app' 
+    ? 'http://localhost:8000' 
     : '');
 const HISTORY_KEY = 'nba_search_history';
 

@@ -14,7 +14,7 @@ from pymongo import MongoClient
 
 load_dotenv()
 
-MAX_PARALLEL_WORKERS = 3
+MAX_PARALLEL_WORKERS = int(os.getenv('MAX_PARALLEL_WORKERS', '5'))
 REQUEST_TIMEOUT_SECONDS = 8
 REQUEST_MAX_RETRIES = 2
 
